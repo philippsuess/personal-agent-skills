@@ -1,7 +1,7 @@
 {
   "name": "flaky-ci-watcher",
   "version": "1.0.0",
-  "description": "Watch your approved open PRs, auto re-run flaky CI failures, and alert in the terminal when a failure looks real or stays flaky",
+  "description": "Watch your open PRs (all across every repo by default, drafts included; or one specific PR by number in the current repo), auto re-run flaky CI failures, and alert in the terminal when a failure looks real or stays flaky",
   "author": "Philipp Hofmann",
   "capabilities": [
     "github-query",
@@ -29,10 +29,11 @@
     "only_write_action": "gh run rerun --failed (flaky-looking failures only)"
   },
   "configuration": {
-    "scope": "my approved open PRs across all repositories",
+    "scope_default": "all my open PRs across all repositories, drafts included",
+    "scope_targeted": "one PR by number in the current repo (mine only)",
     "rerun_cap": 2,
     "notify_channel": "terminal",
-    "state_file": "${TMPDIR:-/tmp}/flaky-ci-watcher-state.json",
+    "state_file": "${FLAKY_CI_WATCHER_HOME:-$HOME/.claude/flaky-ci-watcher}/state.json",
     "recommended_driver": "/loop 5m /flaky-ci-watcher"
   }
 }

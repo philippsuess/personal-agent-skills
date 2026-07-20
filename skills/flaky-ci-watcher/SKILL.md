@@ -1,25 +1,34 @@
 ---
 name: flaky-ci-watcher
-description: Watch your own approved open PRs across all repos, automatically re-run flaky CI failures (up to 2x), and alert in the terminal when a failure looks real (caused by your changes) or stays flaky. Use when you want CI monitored and flaky jobs re-run on your behalf while you let auto-merge handle the rest. Runs continuously as a cheap background watcher that polls every ~10s and only wakes for real work when a check fails.
+description: Watch your open PRs (all of them across every repo by default, drafts included; or one specific PR by number in the current repo), automatically re-run flaky CI failures (up to 2x), and alert in the terminal when a failure looks real (caused by your changes) or stays flaky. Use when you want CI monitored and flaky jobs re-run on your behalf. Runs continuously as a cheap background watcher that polls every ~10s and only wakes for real work when a check fails.
 ---
 
 # Flaky CI Watcher
 
-You monitor the user's **own, already-approved** open pull requests whose CI is
-still running, automatically re-run failures that look **flaky**, and **stop and
-alert** the user (in the terminal) when a failure looks **real** (caused by the
-PR's own changes) or when a flaky-looking job has already been re-run the maximum
-number of times.
+You monitor the user's **own open pull requests** whose CI is still running,
+automatically re-run failures that look **flaky**, and **stop and alert** the
+user (in the terminal) when a failure looks **real** (caused by the PR's own
+changes) or when a flaky-looking job has already been re-run the maximum number
+of times.
 
-The user enables auto-merge themselves. **This skill never approves, merges,
-comments, or pushes code.** Its only write actions are re-running CI jobs.
+**This skill never approves, merges, comments, or pushes code.** Its only write
+actions are re-running CI jobs.
+
+## Two modes
+
+- **Default (`/flaky-ci-watcher`)** — watch **all** the user's open PRs across
+  **every** repo, **drafts included**. This is the standard, always-on mode.
+- **Targeted (`/flaky-ci-watcher <pr-number>`)** — watch a **single** PR, by
+  number, in the repo of the **current working directory**. Only the user's own
+  PRs are accepted (see §2). Use this to babysit one specific PR's CI.
 
 ## Configuration
 
 ```
 RERUN_CAP        = 2        # max automatic re-runs of a flaky-looking job before escalating
 POLL_INTERVAL    = 10       # seconds between cheap CI polls in the background watcher (10–30s)
-SCOPE            = my approved open PRs, across all repositories
+SCOPE            = default: all my open PRs (drafts included), across all repos
+                   targeted: one PR by number in the current repo (mine only)
 NOTIFY_CHANNEL   = terminal (print the alert in this session)
 STATE_DIR        = ${FLAKY_CI_WATCHER_HOME:-$HOME/.claude/flaky-ci-watcher}
 STATE_FILE       = $STATE_DIR/state.json
@@ -59,24 +68,35 @@ process is invisible to the harness and can never wake the agent (it just writes
 the sentinel to a log nobody reads). Track its task id/PID so it can be stopped.
 
 ```bash
+# Default mode — watch all my open PRs across all repos:
 bash "$SKILL_DIR/watch.sh" "$POLL_INTERVAL"   # run in the harness's BACKGROUND mode
+
+# Targeted mode — watch one PR in the current repo:
+bash "$SKILL_DIR/watch.sh" "$POLL_INTERVAL" --repo "$REPO" --pr "$PR_NUMBER"
+
 # $SKILL_DIR is this skill's directory, e.g. ~/.claude/skills/flaky-ci-watcher
 # POLL_INTERVAL (seconds) is optional; defaults to 10.
+# --repo/--pr are set only in targeted mode (see §2). The wake sentinel echoes
+# the PR number back so the woken pass resumes in the same mode.
 ```
 
 The cycle:
-1. Arm `watch.sh` in the background. It polls every `POLL_INTERVAL`s.
+1. Arm `watch.sh` in the background (default or targeted mode). It polls every
+   `POLL_INTERVAL`s.
 2. **While everything is pending/pass** → silent, no agent wake, no model cost.
-3. **A check fails** *or* **all PRs settle** → it prints the sentinel and exits →
-   the harness wakes the agent → run **one pass** (§§1–7).
+3. **A check fails** *or* **all watched PRs settle** → it prints the sentinel and
+   exits → the harness wakes the agent → run **one pass** (§§1–7).
 4. After the pass (e.g. you re-ran a flaky job, sending it back to pending),
-   **re-arm a fresh `watch.sh`** to continue watching. The `RERUN_CAP` in
-   `STATE_FILE` bounds re-runs across passes and escalates when exhausted.
+   **re-arm a fresh `watch.sh` in the same mode** to continue watching. The
+   `RERUN_CAP` in `STATE_FILE` bounds re-runs across passes and escalates when
+   exhausted.
 
 Don't arm a second watcher if one is already armed. Polling every 10s does ~2
-`gh` calls per approved PR per tick — comfortably within GitHub's authenticated
-rate limit for a normal number of open PRs; raise `POLL_INTERVAL` toward 30s if
-you watch many PRs at once.
+`gh` calls per watched PR per tick. Default mode now covers **all** your open
+PRs (not just approved ones), so the PR count can be higher — if you have many
+open PRs, raise `POLL_INTERVAL` toward 30s to stay comfortably within GitHub's
+authenticated rate limit. Targeted mode only ever polls the one PR, so 10s is
+always fine there.
 
 ## One pass
 
@@ -97,16 +117,36 @@ fresh CI run, not a continuation of the old flaky one.
 
 ### 2. Find candidate PRs
 
-Fetch the user's own approved, open PRs across all repos. Filter to those whose
-CI is **still running** (has pending/in-progress checks) OR has **failing**
-checks (a flaky failure may have already landed):
+Build the candidate set differently depending on the mode:
+
+**Default mode** — fetch **all** the user's open PRs across all repos (drafts
+included, no review filter):
 
 ```bash
-gh search prs --author=@me --state=open --review=approved \
+gh search prs --author=@me --state=open \
   --json number,repository,title,url --limit 50
 ```
 
-For each result, check the rollup status (skip drafts and PRs with no checks):
+**Targeted mode** (`/flaky-ci-watcher <pr-number>`) — the candidate set is just
+that one PR in the **current repo**. Resolve the repo from the working directory
+and confirm the user authored the PR before watching it:
+
+```bash
+REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)   # current repo from cwd
+gh pr view <pr-number> --repo "$REPO" \
+  --json number,title,url,author,isDraft \
+  --jq '{number, title, url, login: .author.login, isDraft}'
+```
+
+- If `login` is **not** the user's own login (`gh api user --jq .login`), **do
+  not watch it.** Print one line — `Refusing: PR <repo>#<num> was authored by
+  @<login>, not you. This skill only watches your own PRs.` — and stop.
+- Drafts are fine (targeted mode watches them too).
+- The one PR that passes the authorship check is the sole candidate; skip the
+  `gh search` entirely.
+
+Then, for each candidate PR (either mode), check the rollup status (skip PRs
+with no checks at all):
 
 ```bash
 gh pr checks <number> --repo <owner/repo> \
@@ -202,12 +242,16 @@ Print alerts plainly in this session. Two kinds:
 End every pass with a compact summary so a `loop` run stays readable:
 
 ```
-CI watch pass @ <time>: <N> approved PRs with active/failed CI · <R> jobs re-run · <A> alerts
+CI watch pass @ <time>: <N> open PRs with active/failed CI · <R> jobs re-run · <A> alerts
 - <repo>#<pr>: <pass | pending | re-ran flaky (1/2) | 🔴 real | 🟡 flaky>
 ```
 
-If there are no candidate PRs, print one line: `No approved PRs with running or
-failed CI. Nothing to do.`
+In targeted mode, name the PR being watched instead of a count, e.g.
+`CI watch pass @ <time> (watching <repo>#<pr>): …`.
+
+If there are no candidate PRs, print one line: `No open PRs with running or
+failed CI. Nothing to do.` (targeted mode: `<repo>#<pr> has no running or failed
+CI. Nothing to do.`)
 
 ## Safety constraints
 
@@ -219,13 +263,24 @@ in every alert; never alert twice for the same key unless a new commit was pushe
 
 ## Begin
 
+First determine the mode from how you were invoked:
+
+- **A PR number was given** (`/flaky-ci-watcher 1234`) → **targeted mode**.
+  Resolve the current repo (`gh repo view --json nameWithOwner -q
+  .nameWithOwner`) and run the authorship check in §2 before doing anything
+  else. If it's not the user's own PR, refuse and stop. Otherwise arm
+  `watch.sh <interval> --repo <repo> --pr <num>`.
+- **No PR number** → **default mode**: arm plain `watch.sh <interval>` to watch
+  all your open PRs.
+
 If invoked to **start watching** (and no watcher is already running), arm the
-background watcher from *Continuous background mode* above, confirm the interval
-and PID, then run one pass immediately. On each sentinel wake-up — or when
-invoked manually for a single pass — do:
+background watcher from *Continuous background mode* above in the right mode,
+confirm the interval and PID, then run one pass immediately. On each sentinel
+wake-up — or when invoked manually for a single pass — do:
 
 1. Load `STATE_FILE`.
-2. Find your approved open PRs and filter to those with running or failing CI.
+2. Build the candidate set for the current mode (§2) and filter to PRs with
+   running or failing CI.
 3. For each failing check: get the failed log, classify flaky vs. real.
 4. Re-run flaky failures (up to `RERUN_CAP`); alert on real or persistent-flaky.
 5. Save state and print the pass summary.

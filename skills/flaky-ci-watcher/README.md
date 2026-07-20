@@ -1,17 +1,26 @@
 # Flaky CI Watcher
 
-Monitors your **own, already-approved** open PRs whose CI is still running.
-Automatically re-runs failures that look **flaky**, and **stops and alerts you in
-the terminal** when a failure looks **real** (caused by your changes) or when a
-flaky-looking job keeps failing after the re-run cap.
+Monitors your **own open PRs** whose CI is still running. Automatically re-runs
+failures that look **flaky**, and **stops and alerts you in the terminal** when a
+failure looks **real** (caused by your changes) or when a flaky-looking job keeps
+failing after the re-run cap.
 
-You enable auto-merge yourself — this skill only watches and re-runs. It never
-approves, merges, comments, or pushes code.
+This skill only watches and re-runs. It never approves, merges, comments, or
+pushes code.
+
+## Two modes
+
+- **Default (`/flaky-ci-watcher`)** — watches **all** your open PRs across
+  **every** repo, **drafts included**.
+- **Targeted (`/flaky-ci-watcher <pr-number>`)** — watches a **single** PR by
+  number in the repo of your **current directory**. Only your own PRs are
+  accepted; it refuses a PR you didn't author.
 
 ## What it does, per pass
 
-1. Finds your approved open PRs across all repos (`gh search prs --author=@me
-   --review=approved`).
+1. Builds the candidate set: **default** → all your open PRs across all repos
+   (`gh search prs --author=@me --state=open`); **targeted** → the one PR number
+   you passed, in the current repo, after checking you authored it.
 2. Keeps the ones with **pending/in-progress** or **failing** checks.
 3. For each failed check, pulls the failed log and classifies it:
    - **Real** (compile/lint/test error in a file you changed, or the same step
@@ -23,8 +32,9 @@ approves, merges, comments, or pushes code.
 5. Prints a compact pass summary.
 
 State (re-run counts, what's already been reported) is kept in
-`${TMPDIR:-/tmp}/flaky-ci-watcher-state.json` so re-runs are capped and you aren't
-alerted twice. Pushing a new commit to a PR resets its counters.
+`${FLAKY_CI_WATCHER_HOME:-$HOME/.claude/flaky-ci-watcher}/state.json` so re-runs
+are capped and you aren't alerted twice. Pushing a new commit to a PR resets its
+counters.
 
 ## Requirements
 
@@ -46,9 +56,20 @@ Or run a single pass on demand:
 /flaky-ci-watcher
 ```
 
+To watch **one specific PR** in the repo you're currently in, pass its number:
+
+```
+/flaky-ci-watcher 1234
+```
+
+Targeted mode resolves the repo from your working directory and only accepts a
+PR you authored — it refuses (and does nothing) if the PR belongs to someone
+else.
+
 This skill uses the native Claude Code `SKILL.md` format, so `/flaky-ci-watcher`
 works in **any** directory (it lives in your user-level `~/.claude/skills/`),
-not just inside this repo.
+not just inside this repo. For targeted mode, run it from inside the repo whose
+PR you want to watch.
 
 Keep the session open while it loops — alerts print in the terminal. For
 unattended/background runs on a schedule, see the `schedule` skill instead.
@@ -59,13 +80,15 @@ Defaults live in `SKILL.md` / `skill.json`:
 
 | Setting | Default |
 |---|---|
-| Scope | your approved open PRs, all repos |
+| Scope (default mode) | all your open PRs, all repos, drafts included |
+| Scope (targeted mode) | one PR by number in the current repo (yours only) |
 | Re-run cap | 2 per workflow per commit |
 | Notify channel | terminal |
-| State file | `${TMPDIR:-/tmp}/flaky-ci-watcher-state.json` |
+| State file | `${FLAKY_CI_WATCHER_HOME:-$HOME/.claude/flaky-ci-watcher}/state.json` |
 
-To scope to a single repo, narrow the `gh search prs` query in
-`SKILL.md` (e.g. add `--repo getsentry/sentry-cocoa`).
+To watch just one PR, pass its number (`/flaky-ci-watcher 1234`) from inside
+that repo. To scope default mode to a single repo, narrow the `gh search prs`
+query in `SKILL.md` (e.g. add `--repo getsentry/sentry-cocoa`).
 
 ## Example output
 
@@ -80,7 +103,7 @@ To scope to a single repo, narrow the `gh search prs` query in
    Re-ran 2× and it keeps failing intermittently: simulator boot timeout ("Unable to boot device").
    Action: stopped re-running. "Hey, this looks like another flaky test."
 
-CI watch pass @ 14:05: 3 approved PRs with active/failed CI · 1 jobs re-run · 2 alerts
+CI watch pass @ 14:05: 3 open PRs with active/failed CI · 1 jobs re-run · 2 alerts
 - getsentry/sentry-cocoa#1234: 🔴 real
 - getsentry/sentry-cocoa#1240: 🟡 flaky
 - getsentry/sentry-cocoa#1251: pending
