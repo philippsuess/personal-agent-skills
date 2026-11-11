@@ -44,7 +44,7 @@ If the PR number is missing, ask for it.
 
 ## Loop (round N = 1 … 5)
 
-1. **Investigate.** `node $SKILL/investigate.mjs run --round N --base $MB [--brief …] [--models …]`. Then call `node $SKILL/investigate.mjs wait --round N` repeatedly until `status` is `done`. Each `wait` call returns within 90 s. Tell the user briefly that the models are running.
+1. **Investigate.** `node $SKILL/investigate.mjs run --round N --base $MB [--brief …] [--models …]`. Then call `node $SKILL/investigate.mjs wait --round N --format text` repeatedly until `status` is `done`. Each `wait` call returns within 90 s. Tell the user briefly that the models are running.
    - `died`: call `run` again once (finished models are skipped). If it dies again, stop with an error.
    - Any `error` from `run` (e.g. `diff_too_large`): show its `message` to the user and stop.
    - Mention failed models briefly. If **every** model failed, ask the user: retry this round (doesn't count toward the 5) or stop.

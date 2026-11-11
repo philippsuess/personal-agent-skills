@@ -344,7 +344,23 @@ function roundStatus(roundDir) {
   return { finished, pending, results };
 }
 
+function printWait(obj, args) {
+  if (args.format !== 'text') return print(obj);
+  const lines = [obj.status, (obj.finished ?? []).join(',')];
+  if (obj.pending) lines.push(obj.pending.join(','));
+  for (const r of obj.results ?? []) {
+    lines.push(`== ${r.model} ${r.ok === false ? r.reason : ''}`.trimEnd());
+    for (const f of r.findings ?? []) {
+      lines.push(` ${f.logaf} ${f.category} ${f.file}:${f.line} ${f.title}`);
+      lines.push(`    evidence: ${f.evidence}`);
+      lines.push(`    fix: ${f.suggested_fix} [${f.confidence}]`);
+    }
+  }
+  process.stdout.write(lines.join('\n') + '\n');
+}
+
 async function cmdWait(args) {
+  if (args.format !== undefined && args.format !== 'text' && args.format !== 'json') fail('bad_args', '--format must be text or json');
   const root = repoRoot();
   const n = roundNumber(args);
   const timeoutSec = Number(args.timeout ?? 90);
@@ -356,16 +372,16 @@ async function cmdWait(args) {
   for (;;) {
     if (fs.existsSync(path.join(roundDir, 'done'))) {
       const { results } = roundStatus(roundDir);
-      print({ status: 'done', round: n, results });
+      printWait({ status: 'done', round: n, results }, args);
       return;
     }
     if (!isAlive(readPid(path.join(roundDir, 'runner.pid')))) {
-      print({ status: 'died', round: n });
+      printWait({ status: 'died', round: n }, args);
       return;
     }
     if (Date.now() >= deadline) {
       const { finished, pending } = roundStatus(roundDir);
-      print({ status: 'running', round: n, finished, pending });
+      printWait({ status: 'running', round: n, finished, pending }, args);
       return;
     }
     await new Promise((r) => setTimeout(r, 500));
