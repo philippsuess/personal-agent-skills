@@ -34,15 +34,26 @@ POLL_INTERVAL_ENV="${POLL_INTERVAL:-}"
 POLL_INTERVAL_ARG=""
 TARGET_REPO=""
 TARGET_PR=""
+TARGETED=0
 
 # Parse args: a bare number is the poll interval; --repo/--pr set targeted mode.
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) TARGET_REPO="${2:-}"; shift 2 ;;
-    --pr)   TARGET_PR="${2:-}"; shift 2 ;;
+    --repo|--pr)
+      # Without a value, `shift 2` would fail and leave $# unchanged -> endless loop.
+      [ $# -ge 2 ] || { echo "watch.sh: $1 needs a value" >&2; exit 2; }
+      if [ "$1" = "--repo" ]; then TARGET_REPO="$2"; else TARGET_PR="$2"; fi
+      TARGETED=1
+      shift 2 ;;
     *)      POLL_INTERVAL_ARG="$1"; shift ;;
   esac
 done
+
+# Targeted mode needs both values; never fall back to watching all PRs.
+if [ "$TARGETED" -eq 1 ] && { [ -z "$TARGET_REPO" ] || [ -z "$TARGET_PR" ]; }; then
+  echo "watch.sh: targeted mode needs both --repo <owner/repo> and --pr <num>" >&2
+  exit 2
+fi
 
 # Precedence: positional arg > env var > default 10.
 POLL_INTERVAL="${POLL_INTERVAL_ARG:-${POLL_INTERVAL_ENV:-10}}"

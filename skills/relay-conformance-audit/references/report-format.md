@@ -43,7 +43,8 @@ TS=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
   -H 'Content-type: application/json; charset=utf-8' \
   --data "$(jq -n --arg c "$SLACK_CHANNEL_ID" --arg t "$DELTA_TEXT" '{channel:$c, text:$t}')" \
   | jq -r 'if .ok then .ts else ("ERR:"+.error) end')
-# guard: [ "${TS#ERR:}" = "$TS" ] || { echo "Slack post failed: $TS"; exit 1; }
+# guard (an empty TS means curl/jq failed, e.g. Slack unreachable):
+# [ -n "$TS" ] && [ "${TS#ERR:}" = "$TS" ] || { echo "Slack post failed: ${TS:-no response}"; exit 1; }
 ```
 2. Post the full report as a threaded reply (in a code block; use `jq -Rs` to JSON-escape a file):
 ```bash
