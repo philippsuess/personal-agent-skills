@@ -3,7 +3,7 @@
 The weekly cloud routine that drives this skill. Created via the `schedule` skill / claude.ai routines.
 
 - **Routine:** `relay-conformance-audit-weekly` — id `trig_01TgfZKrPC6oLU3osDrF5uKu` — https://claude.ai/code/routines/trig_01TgfZKrPC6oLU3osDrF5uKu
-- **Cron:** `0 7 * * 3` (UTC) = **Wednesdays 09:00 Europe/Vienna** during CEST. Note: cron is fixed UTC, so in winter (CET) this fires at 08:00 Vienna — bump to `0 8 * * 3` if you want a strict 09:00 year-round.
+- **Cron:** `0 7 * * 3` (UTC) = **Wednesdays 09:00 Europe/Vienna** during CEST. Note: cron is fixed UTC, so in winter (CET) this fires at 08:00 Vienna. A fixed-UTC cron can't hit 09:00 year-round: switch to `0 8 * * 3` for winter (CET) and back to `0 7 * * 3` for summer (CEST), or accept the one-hour drift.
 - **Model:** `claude-sonnet-5` (bump to opus for deeper audits).
 - **Sources (auto-checked-out):** `getsentry/sentry-cocoa`, `philipphofmann/personal-agent-skills`.
 - **MCP:** Slack connector. **Posts to** `#team-sdk-apple` (`C09MQRJGBU2`).

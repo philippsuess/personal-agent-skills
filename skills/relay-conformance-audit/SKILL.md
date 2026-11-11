@@ -35,7 +35,7 @@ You audit the **Sentry Cocoa SDK** (`getsentry/sentry-cocoa`) for **protocol-con
    - Return **structured findings**, each: `{ id, area, severity (HIGH|MEDIUM|LOW), location (file:line), summary, spec_citation (URL or Relay file), failure_mode }`, plus a short list of what it verified **CONFORMANT**.
    - The subagent is read-only and must cite exact strings/line numbers.
 
-3. **Classify vs baseline.** Load `references/baseline.md`. For every finding, match primarily on `id / area / summary`, using `file:line` only as a hint (line numbers drift as the SDK changes; see `baseline.md`), and label:
+3. **Classify vs baseline.** Load `references/baseline.md`. For every finding, match on `area + summary`, using `file:line` only as a hint (line numbers drift as the SDK changes; see `baseline.md`). Subagent ids are freshly generated, so they never match baseline ids; when a finding matches a baseline entry, reuse that entry's `id`. Label:
    - **NEW** — not in the baseline (⚠️ this is the signal that matters).
    - **KNOWN** — already in the baseline.
    - **RESOLVED** — a baseline finding the audit no longer reproduces (✅ likely fixed; worth confirming).

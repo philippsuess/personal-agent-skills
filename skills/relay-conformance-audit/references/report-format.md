@@ -44,15 +44,17 @@ TS=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
   --data "$(jq -n --arg c "$SLACK_CHANNEL_ID" --arg t "$DELTA_TEXT" '{channel:$c, text:$t}')" \
   | jq -r 'if .ok then .ts else ("ERR:"+.error) end')
 # guard (an empty TS means curl/jq failed, e.g. Slack unreachable):
-# [ -n "$TS" ] && [ "${TS#ERR:}" = "$TS" ] || { echo "Slack post failed: ${TS:-no response}"; exit 1; }
+[ -n "$TS" ] && [ "${TS#ERR:}" = "$TS" ] || { echo "Slack post failed: ${TS:-no response}"; exit 1; }
 ```
-2. Post the full report as a threaded reply (in a code block; use `jq -Rs` to JSON-escape a file):
+2. Post the full report as a threaded reply (in a code block; `--rawfile` binds the file as a JSON-escaped string):
 ```bash
-curl -sS -X POST https://slack.com/api/chat.postMessage \
+REPLY=$(curl -sS -X POST https://slack.com/api/chat.postMessage \
   -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
   -H 'Content-type: application/json; charset=utf-8' \
   --data "$(jq -n --arg c "$SLACK_CHANNEL_ID" --arg ts "$TS" \
-            --rawfile body full-report.md '{channel:$c, thread_ts:$ts, text:("```\n"+$body+"\n```")}')"
+            --rawfile body full-report.md '{channel:$c, thread_ts:$ts, text:("```\n"+$body+"\n```")}')" \
+  | jq -r 'if .ok then "ok" else ("ERR:"+.error) end')
+[ "$REPLY" = "ok" ] || { echo "Slack thread reply failed: ${REPLY:-no response}"; exit 1; }
 ```
    For a long report, upload it as a file in the thread instead (current API): `files.getUploadURLExternal` → PUT the bytes → `files.completeUploadExternal` with `channel_id` + `thread_ts`. (The old `files.upload` is deprecated.)
 

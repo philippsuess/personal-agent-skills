@@ -103,8 +103,7 @@ always fine there.
 ### 1. Load state
 
 Read `STATE_FILE` if it exists (JSON). If missing/corrupt, start from `{}`
-(create `STATE_DIR` with `mkdir -p` first if it doesn't exist — `watch.sh` does
-this for you, but a manual pass may run without it).
+(create `STATE_DIR` with `mkdir -p` first if it doesn't exist).
 The state maps a key `"<repo>#<pr>#<workflow>"` to:
 
 ```json

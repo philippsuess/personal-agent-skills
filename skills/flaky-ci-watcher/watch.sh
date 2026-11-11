@@ -41,10 +41,12 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --repo|--pr)
       # Without a value, `shift 2` would fail and leave $# unchanged -> endless loop.
-      [ $# -ge 2 ] || { echo "watch.sh: $1 needs a value" >&2; exit 2; }
+      # A value that starts with "-" is another flag, not a value.
+      if [ $# -lt 2 ] || [ "${2#-}" != "$2" ]; then echo "watch.sh: $1 needs a value" >&2; exit 2; fi
       if [ "$1" = "--repo" ]; then TARGET_REPO="$2"; else TARGET_PR="$2"; fi
       TARGETED=1
       shift 2 ;;
+    -*)     echo "watch.sh: unknown option $1" >&2; exit 2 ;;
     *)      POLL_INTERVAL_ARG="$1"; shift ;;
   esac
 done
@@ -57,6 +59,10 @@ fi
 
 # Precedence: positional arg > env var > default 10.
 POLL_INTERVAL="${POLL_INTERVAL_ARG:-${POLL_INTERVAL_ENV:-10}}"
+# A bad interval makes `sleep` fail at once, so the loop would call gh with no delay.
+case "$POLL_INTERVAL" in
+  ''|*[!0-9]*|0) echo "watch.sh: poll interval must be a positive integer, got '$POLL_INTERVAL'" >&2; exit 2 ;;
+esac
 SENTINEL="AGENT_LOOP_WAKE_flakyci"
 
 # The prompt echoed on wake tells the agent which mode to resume in.

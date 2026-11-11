@@ -30,6 +30,7 @@ Each skill uses the native `SKILL.md` format, so once synced it is available as
 - **stacked-pr-merge-main**: Safely merge main into feature branch created from another merged branch, preferring current branch on conflicts
 - **multi-clone**: Clone a GitHub repository multiple times into numbered folders for parallel agent work
 - **flaky-ci-watcher**: Watch your open PRs (all by default, or one by number in the current repo), auto re-run flaky CI failures, and alert in the terminal when a failure looks real or stays flaky
+- **relay-conformance-audit**: Read-only audit of the Sentry Cocoa SDK for protocol-conformance drift against Relay and the develop-docs, with a weekly delta report
 
 ## Setup
 
