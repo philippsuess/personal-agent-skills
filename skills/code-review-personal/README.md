@@ -20,7 +20,7 @@ Round 1 reviews the whole PR diff. Later rounds are verify rounds: the models on
 
 ## Requirements
 
-- `pi` with an OpenRouter key. Default models: `openrouter/z-ai/glm-5.3-flash`, `openrouter/deepseek/deepseek-v4-pro-0813`, `openrouter/anthropic/claude-haiku-5.5`.
+- `pi` with an OpenRouter key. Default models: `openrouter/z-ai/glm-5.3-flash`, `openrouter/openai/gpt-6-luna:medium` (`:medium` is pi's thinking-level suffix), `openrouter/anthropic/claude-haiku-5.5`.
 - `gh` (logged in), `git`, Node ≥ 20.
 
 ## Temp files

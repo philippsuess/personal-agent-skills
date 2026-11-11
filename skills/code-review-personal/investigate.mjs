@@ -14,7 +14,8 @@ const SKILL_DIR = path.dirname(SCRIPT);
 const TEMP_NAME = 'temp-pr-review';
 const DEFAULT_MODELS = [
   'openrouter/z-ai/glm-5.3-flash',
-  'openrouter/deepseek/deepseek-v4-pro-0813',
+  // Replaced DeepSeek, whose models took 4–10 minutes per round.
+  'openrouter/openai/gpt-6-luna:medium',
   'openrouter/anthropic/claude-haiku-5.5',
 ];
 const MAX_DIFF_BYTES = 200 * 1024;
@@ -448,6 +449,8 @@ async function cmdWait(args) {
       return;
     }
     if (!isOurs(readPid(path.join(roundDir, 'runner.pid')), RUNNER_MARKER)) {
+      // The runner may have written done and exited since the check above.
+      if (fs.existsSync(path.join(roundDir, 'done'))) continue;
       printWait({ status: 'died', round: n }, args);
       return;
     }
