@@ -30,6 +30,8 @@ ok_output() {
 case "$behavior" in
   ok) ok_output ;;
   empty) printf '```json\n{"findings": []}\n```\n' ;;
+  verdicts_only) printf '```json\n{"verdicts": [{"id": "R1-1", "fixed": false, "note": "still fails"}]}\n```\n' ;;
+  null_finding) printf '```json\n{"findings": [null, {"logaf": "L", "title": "real"}]}\n```\n' ;;
   verdicts) printf '```json\n{"verdicts": [{"id": "R1-1", "fixed": true, "note": ""}, {"id": "R1-2", "fixed": false, "note": "still fails"}], "findings": []}\n```\n' ;;
   multi)
     printf '```json\n{"findings": [{"title": "first"}]}\n```\n'

@@ -143,7 +143,9 @@ function roundNumber(args) {
 // Takes the last fenced ```json block that parses, or the whole output if there is none.
 // Fences must start a line: findings often quote ``` inside their JSON strings,
 // and JSON strings can't contain raw newlines, so a line-start fence is real.
-export function parseOutput(text) {
+// A full round requires a findings array. A verify round requires a verdicts array:
+// without it no fix was checked; findings may be omitted there and count as none.
+export function parseOutput(text, mode = 'full') {
   const blocks = [...text.matchAll(/^```json[^\n]*\n([\s\S]*?)^```[ \t]*\r?$/gm)];
   const candidates = blocks.length ? blocks.map((b) => b[1]).reverse() : [text.trim()];
   for (const candidate of candidates) {
@@ -153,9 +155,19 @@ export function parseOutput(text) {
     } catch {
       continue;
     }
-    if (obj && Array.isArray(obj.findings)) return obj;
+    if (!obj || typeof obj !== 'object') continue;
+    if (mode === 'verify') {
+      if (!Array.isArray(obj.verdicts)) continue;
+      if (obj.findings === undefined) obj.findings = [];
+    }
+    if (Array.isArray(obj.findings)) return obj;
   }
   return null;
+}
+
+// Issue IDs (R<round>-<k>) listed in a fixed-round file; each needs a verdict.
+export function issueIds(text) {
+  return [...new Set(text.match(/\bR\d+-\d+\b/g) ?? [])];
 }
 
 // Splits a unified diff into per-file sizes, largest first.
@@ -240,6 +252,10 @@ function cmdRun(args) {
   }
   fs.writeFileSync(path.join(roundDir, 'diff.patch'), diff);
   writeAtomic(path.join(roundDir, 'models.json'), JSON.stringify(models.map((model) => ({ model, slug: slug(model) }))));
+  // The runner needs the mode to validate answers, and in verify rounds the IDs
+  // that each need a verdict.
+  const expectedIds = mode === 'verify' ? issueIds(readArgFile('--fixed', args.fixed)) : [];
+  writeAtomic(path.join(roundDir, 'round.json'), JSON.stringify({ mode, expectedIds }));
   fs.writeFileSync(path.join(roundDir, 'prompt.md'), prompt);
 
   const log = fs.openSync(path.join(roundDir, 'runner.log'), 'a');
@@ -294,6 +310,7 @@ async function cmdRunner(args) {
   const temp = path.join(root, TEMP_NAME);
   const roundDir = path.join(temp, `round-${n}`);
   const models = JSON.parse(fs.readFileSync(path.join(roundDir, 'models.json'), 'utf8'));
+  const round = JSON.parse(fs.readFileSync(path.join(roundDir, 'round.json'), 'utf8'));
   const prompt = path.join(roundDir, 'prompt.md');
   const children = new Set();
 
@@ -356,7 +373,7 @@ async function cmdRunner(args) {
         fs.rmSync(piPidFile, { force: true });
         fs.closeSync(outFd);
         fs.closeSync(errFd);
-        const parsed = spawnError ? null : parseOutput(fs.readFileSync(out, 'utf8'));
+        const parsed = spawnError ? null : parseOutput(fs.readFileSync(out, 'utf8'), round.mode);
         // Valid JSON counts as success even if pi exited non-zero.
         if (parsed) resolve({ ok: true, parsed });
         else if (spawnError) resolve({ ok: false, reason: `spawn failed: ${spawnError.message}` });
@@ -379,7 +396,12 @@ async function cmdRunner(args) {
       if (result.ok) {
         // verdicts only appear in verify rounds: one per previously fixed issue.
         const verdicts = Array.isArray(result.parsed.verdicts) ? result.parsed.verdicts : [];
-        writeAtomic(ok, JSON.stringify({ model, findings: result.parsed.findings, verdicts, attempts: first.ok ? 1 : 2 }));
+        // An issue this model gave no verdict for wasn't checked by it.
+        const missingVerdicts = round.expectedIds.filter((id) => !verdicts.some((v) => v && v.id === id));
+        writeAtomic(
+          ok,
+          JSON.stringify({ model, findings: result.parsed.findings, verdicts, missingVerdicts, attempts: first.ok ? 1 : 2 }),
+        );
       } else {
         writeAtomic(failed, JSON.stringify({ model, reason: `${first.reason}, then ${result.reason}` }));
       }
@@ -403,7 +425,13 @@ function roundStatus(roundDir) {
     if (fs.existsSync(ok)) {
       finished.push(model);
       const saved = JSON.parse(fs.readFileSync(ok, 'utf8'));
-      results.push({ model, ok: true, findings: saved.findings, verdicts: saved.verdicts ?? [] });
+      results.push({
+        model,
+        ok: true,
+        findings: saved.findings,
+        verdicts: saved.verdicts ?? [],
+        missingVerdicts: saved.missingVerdicts ?? [],
+      });
     } else if (fs.existsSync(failed)) {
       finished.push(model);
       results.push({ model, ok: false, reason: JSON.parse(fs.readFileSync(failed, 'utf8')).reason });
@@ -420,10 +448,13 @@ function printWait(obj, args) {
   if (obj.pending) lines.push(obj.pending.join(','));
   for (const r of obj.results ?? []) {
     lines.push(`== ${r.model} ${r.ok === false ? r.reason : ''}`.trimEnd());
-    for (const v of r.verdicts ?? []) {
+    // Model output is untrusted: skip elements that aren't objects instead of crashing.
+    const objects = (list) => (list ?? []).filter((x) => x && typeof x === 'object');
+    for (const v of objects(r.verdicts)) {
       lines.push(` verdict ${v.id}: ${v.fixed === true ? 'fixed' : 'NOT FIXED'}${v.note ? ` (${v.note})` : ''}`);
     }
-    for (const f of r.findings ?? []) {
+    if (r.missingVerdicts?.length) lines.push(` missing verdicts: ${r.missingVerdicts.join(', ')}`);
+    for (const f of objects(r.findings)) {
       lines.push(` ${f.logaf} ${f.category} ${f.file}:${f.line} ${f.title}`);
       lines.push(`    evidence: ${f.evidence}`);
       lines.push(`    fix: ${f.suggested_fix} [${f.confidence}]`);

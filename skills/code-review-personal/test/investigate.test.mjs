@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseOutput, slug } from '../investigate.mjs';
+import { issueIds, parseOutput, slug } from '../investigate.mjs';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const SCRIPT = path.join(TEST_DIR, '..', 'investigate.mjs');
@@ -323,6 +323,70 @@ test('verify mode reviews only the fix commits, with the fixed-issues list and v
   const text = spawnSync(process.execPath, [SCRIPT, 'wait', '--round', '2', '--format', 'text'], { cwd: ctx.repo }).stdout.toString();
   assert.match(text, /verdict R1-1: fixed/);
   assert.match(text, /verdict R1-2: NOT FIXED \(still fails\)/);
+});
+
+// A repo with a PR commit and a fix commit on top, ready for a verify round.
+function makeVerifyRepo(fixedText) {
+  const ctx = makeRepo();
+  ctx.prHead = git(ctx.repo, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(ctx.repo, 'src/a.js'), 'const a = 2;\nconst b = a + 1;\nconst c = b * 2;\n');
+  git(ctx.repo, 'commit', '-q', '-am', 'round 1 fixes');
+  fs.mkdirSync(path.join(ctx.repo, 'temp-pr-review'));
+  ctx.fixed = path.join(ctx.repo, 'temp-pr-review/fixed-round-1.md');
+  fs.writeFileSync(ctx.fixed, fixedText);
+  return ctx;
+}
+
+const verifyArgs = (ctx) => ['run', '--round', '2', '--mode', 'verify', '--since', ctx.prHead, '--fixed', ctx.fixed, '--models', 'm/x'];
+
+test('parseOutput validates per mode: full needs findings, verify needs verdicts', () => {
+  const verdictsOnly = '```json\n{"verdicts": [{"id": "R1-1", "fixed": true}]}\n```';
+  const findingsOnly = '```json\n{"findings": []}\n```';
+  assert.equal(parseOutput(verdictsOnly), null);
+  assert.deepEqual(parseOutput(verdictsOnly, 'verify').findings, []);
+  assert.equal(parseOutput(findingsOnly, 'verify'), null);
+  assert.deepEqual(issueIds('R1-1 | x\nR1-2 | see R1-1\nR10-3'), ['R1-1', 'R1-2', 'R10-3']);
+});
+
+test('a verify answer with verdicts but no findings is accepted', async () => {
+  const ctx = makeVerifyRepo('R1-1 | M | src/a.js:3 | title | evidence | change');
+  behave(ctx, 'm/x', 'verdicts_only');
+  cli(ctx, verifyArgs(ctx));
+  const done = await waitDone(ctx, 2);
+  assert.equal(done.results[0].ok, true);
+  assert.deepEqual(done.results[0].findings, []);
+  assert.equal(done.results[0].verdicts[0].fixed, false);
+  assert.equal(calls(ctx).length, 1);
+});
+
+test('a verify answer without verdicts is retried, then fails', async () => {
+  const ctx = makeVerifyRepo('R1-1 | M | src/a.js:3 | title | evidence | change');
+  behave(ctx, 'm/x', 'ok');
+  cli(ctx, verifyArgs(ctx));
+  const done = await waitDone(ctx, 2);
+  assert.equal(done.results[0].ok, false);
+  assert.equal(calls(ctx).length, 2);
+  assert.match(calls(ctx)[1].message, /Return only the JSON block/);
+});
+
+test('issues a model gave no verdict for are reported as missing', async () => {
+  const ctx = makeVerifyRepo('R1-1 | …\nR1-2 | …\nR1-3 | …');
+  behave(ctx, 'm/x', 'verdicts');
+  cli(ctx, verifyArgs(ctx));
+  const done = await waitDone(ctx, 2);
+  assert.deepEqual(done.results[0].missingVerdicts, ['R1-3']);
+  const text = spawnSync(process.execPath, [SCRIPT, 'wait', '--round', '2', '--format', 'text'], { cwd: ctx.repo }).stdout.toString();
+  assert.match(text, /missing verdicts: R1-3/);
+});
+
+test('wait --format text skips malformed findings instead of failing', async () => {
+  const ctx = makeRepo();
+  behave(ctx, 'm/x', 'null_finding');
+  cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+  await waitDone(ctx, 1);
+  const r = spawnSync(process.execPath, [SCRIPT, 'wait', '--round', '1', '--format', 'text'], { cwd: ctx.repo });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout.toString(), /L undefined undefined:undefined real/);
 });
 
 test('verify mode requires --since and --fixed, and rejects unknown modes', () => {
