@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Runs the investigator models for one review round in parallel, in the background.
+// Round 1 is a full review of the PR diff; later rounds verify only the fix commits.
 // Subcommands: run, wait, stop. Each prints exactly one JSON object to stdout.
 // See SKILL.md for how the review master uses it.
 
@@ -19,10 +20,11 @@ const DEFAULT_MODELS = [
 const MAX_DIFF_BYTES = 200 * 1024;
 const PI_BIN = process.env.CODE_REVIEW_PERSONAL_PI_BIN || 'pi';
 const TIMEOUT_SEC = Number(process.env.CODE_REVIEW_PERSONAL_TIMEOUT_SEC);
-// An invalid value would make setTimeout fire at once and kill every model. That
-// includes anything above setTimeout's limit of 2^31-1 ms (about 24.8 days).
+// An invalid value would make setTimeout fire at once and kill every model, so it
+// falls back to 600 s. A huge value is clamped to setTimeout's limit of 2^31-1 ms
+// (about 24.8 days), which would otherwise also fire at once.
 const TIMEOUT_MS =
-  (Number.isFinite(TIMEOUT_SEC) && TIMEOUT_SEC > 0 && TIMEOUT_SEC * 1000 <= 2 ** 31 - 1 ? TIMEOUT_SEC : 600) * 1000;
+  Number.isFinite(TIMEOUT_SEC) && TIMEOUT_SEC > 0 ? Math.min(TIMEOUT_SEC * 1000, 2 ** 31 - 1) : 600 * 1000;
 const LOCKFILES = [
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'Cargo.lock', 'Gemfile.lock',
   'Podfile.lock', 'poetry.lock', 'uv.lock', 'composer.lock', 'go.sum', 'Package.resolved',
@@ -173,7 +175,15 @@ const kb = (bytes) => `${Math.round(bytes / 1024)} KB`;
 function cmdRun(args) {
   const root = repoRoot();
   const n = roundNumber(args);
-  if (!args.base) fail('bad_args', '--base <sha> is required');
+  // full: review the whole PR diff (base..HEAD). verify: check only the previous
+  // round's fix commits (since..HEAD) against the list of issues they fixed.
+  const mode = args.mode ?? 'full';
+  if (mode !== 'full' && mode !== 'verify') fail('bad_args', '--mode must be full or verify');
+  if (mode === 'full' && !args.base) fail('bad_args', '--base <sha> is required');
+  if (mode === 'verify' && (!args.since || !args.fixed)) {
+    fail('bad_args', '--mode verify needs --since <sha> and --fixed <file>');
+  }
+  const from = mode === 'verify' ? args.since : args.base;
   const models = args.models ? args.models.split(',').map((m) => m.trim()).filter(Boolean) : DEFAULT_MODELS;
   if (models.length < 1 || models.length > 5) fail('bad_args', '--models needs 1 to 5 entries');
   if (new Set(models).size !== models.length) fail('bad_args', '--models has duplicates');
@@ -203,16 +213,16 @@ function cmdRun(args) {
   let diff;
   try {
     // Fixed prefixes, so diff.noprefix in the user's config can't change the headers.
-    diff = git(root, ['diff', '--src-prefix=a/', '--dst-prefix=b/', args.base, 'HEAD', '--', ...excludes]).toString();
+    diff = git(root, ['diff', '--src-prefix=a/', '--dst-prefix=b/', from, 'HEAD', '--', ...excludes]).toString();
   } catch (e) {
     fail('git_diff_failed', String(e.stderr || e.message).trim());
   }
   const size = Buffer.byteLength(diff);
   if (size === 0) {
-    if (git(root, ['diff', '--name-only', args.base, 'HEAD']).toString().trim()) {
-      fail('lockfiles_only', `Only lockfiles changed between ${args.base} and HEAD, so there is nothing for the models to review.`);
+    if (git(root, ['diff', '--name-only', from, 'HEAD']).toString().trim()) {
+      fail('lockfiles_only', `Only lockfiles changed between ${from} and HEAD, so there is nothing for the models to review.`);
     }
-    fail('empty_diff', `No changes between ${args.base} and HEAD.`);
+    fail('empty_diff', `No changes between ${from} and HEAD.`);
   }
   if (size > MAX_DIFF_BYTES) {
     const top = largestFiles(diff, 3).map((f) => `${f.file} (${kb(f.bytes)})`).join(', ');
@@ -220,7 +230,7 @@ function cmdRun(args) {
   }
 
   // Build the prompt first, so a bad --brief fails before anything is written.
-  const prompt = buildPrompt(temp, n, args.brief);
+  const prompt = mode === 'verify' ? buildVerifyPrompt(temp, n, args.brief, args.fixed) : buildPrompt(temp, n, args.brief);
   fs.mkdirSync(roundDir, { recursive: true });
   killOrphans(roundDir);
   // A new runner retries failed models, so drop old failures and the done marker.
@@ -243,22 +253,35 @@ function cmdRun(args) {
   print({ status: 'running', round: n });
 }
 
-function buildPrompt(temp, n, briefPath) {
-  const parts = [fs.readFileSync(path.join(SKILL_DIR, 'investigator.md'), 'utf8')];
-  if (briefPath) {
-    let brief;
-    try {
-      brief = fs.readFileSync(path.resolve(briefPath), 'utf8');
-    } catch {
-      fail('bad_args', `Can't read --brief file: ${briefPath}`);
-    }
-    parts.push(`# Brief from the user\n\n${brief}`);
+function readArgFile(flag, file) {
+  try {
+    return fs.readFileSync(path.resolve(file), 'utf8');
+  } catch {
+    fail('bad_args', `Can't read ${flag} file: ${file}`);
   }
+}
+
+// The parts both prompt kinds share after their template: brief and PR text.
+function contextParts(temp, briefPath) {
+  const parts = [];
+  if (briefPath) parts.push(`# Brief from the user\n\n${readArgFile('--brief', briefPath)}`);
   const prMd = path.join(temp, 'pr.md');
   if (fs.existsSync(prMd)) parts.push(`# Pull request\n\n${fs.readFileSync(prMd, 'utf8')}`);
+  return parts;
+}
+
+function buildPrompt(temp, n, briefPath) {
+  const parts = [fs.readFileSync(path.join(SKILL_DIR, 'investigator.md'), 'utf8'), ...contextParts(temp, briefPath)];
   parts.push(`# Diff to review\n\nThe full diff is in \`${TEMP_NAME}/round-${n}/diff.patch\`. Read it first.`);
   const prior = path.join(temp, 'prior.md');
   if (fs.existsSync(prior)) parts.push(`# Earlier findings and decisions\n\n${fs.readFileSync(prior, 'utf8')}`);
+  return parts.join('\n\n---\n\n') + '\n';
+}
+
+function buildVerifyPrompt(temp, n, briefPath, fixedPath) {
+  const parts = [fs.readFileSync(path.join(SKILL_DIR, 'investigator-verify.md'), 'utf8'), ...contextParts(temp, briefPath)];
+  parts.push(`# Issues fixed in the previous round\n\n${readArgFile('--fixed', fixedPath)}`);
+  parts.push(`# Fix diff\n\nThe diff of the fixes is in \`${TEMP_NAME}/round-${n}/diff.patch\`. Read it first.`);
   return parts.join('\n\n---\n\n') + '\n';
 }
 
@@ -353,7 +376,9 @@ async function cmdRunner(args) {
       // Retry once, always with the same model.
       const result = first.ok ? first : await runPi(model, 2, first.invalidJson);
       if (result.ok) {
-        writeAtomic(ok, JSON.stringify({ model, findings: result.parsed.findings, attempts: first.ok ? 1 : 2 }));
+        // verdicts only appear in verify rounds: one per previously fixed issue.
+        const verdicts = Array.isArray(result.parsed.verdicts) ? result.parsed.verdicts : [];
+        writeAtomic(ok, JSON.stringify({ model, findings: result.parsed.findings, verdicts, attempts: first.ok ? 1 : 2 }));
       } else {
         writeAtomic(failed, JSON.stringify({ model, reason: `${first.reason}, then ${result.reason}` }));
       }
@@ -376,7 +401,8 @@ function roundStatus(roundDir) {
     const failed = path.join(roundDir, `${s}.failed`);
     if (fs.existsSync(ok)) {
       finished.push(model);
-      results.push({ model, ok: true, findings: JSON.parse(fs.readFileSync(ok, 'utf8')).findings });
+      const saved = JSON.parse(fs.readFileSync(ok, 'utf8'));
+      results.push({ model, ok: true, findings: saved.findings, verdicts: saved.verdicts ?? [] });
     } else if (fs.existsSync(failed)) {
       finished.push(model);
       results.push({ model, ok: false, reason: JSON.parse(fs.readFileSync(failed, 'utf8')).reason });
@@ -393,6 +419,9 @@ function printWait(obj, args) {
   if (obj.pending) lines.push(obj.pending.join(','));
   for (const r of obj.results ?? []) {
     lines.push(`== ${r.model} ${r.ok === false ? r.reason : ''}`.trimEnd());
+    for (const v of r.verdicts ?? []) {
+      lines.push(` verdict ${v.id}: ${v.fixed === true ? 'fixed' : 'NOT FIXED'}${v.note ? ` (${v.note})` : ''}`);
+    }
     for (const f of r.findings ?? []) {
       lines.push(` ${f.logaf} ${f.category} ${f.file}:${f.line} ${f.title}`);
       lines.push(`    evidence: ${f.evidence}`);

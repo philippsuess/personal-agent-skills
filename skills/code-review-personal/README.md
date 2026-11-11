@@ -4,6 +4,8 @@ Multi-model review loop for a pull request, focused on correctness bugs.
 
 Several models (via the `pi` CLI) review the same PR diff in parallel. The agent you invoke the skill from (pi, Claude Code, Codex) acts as the review master: it merges duplicate findings, triages them by LOGAF level (L = nitpick, M = worth doing, H = must fix), fixes what is safe, asks you about the rest, and commits one fix commit per round. It repeats for up to 5 rounds, then shows a summary, deletes its temp files and pushes. It only asks first if the PR isn't yours.
 
+Round 1 reviews the whole PR diff. Later rounds are verify rounds: the models only check the previous round's fix commit, confirming each fixed issue is really fixed and that the fixes didn't add new problems. That keeps later rounds fast, at the cost of not re-finding issues round 1 missed.
+
 ## Usage
 
 ```
@@ -33,6 +35,7 @@ Everything the review writes lives in `temp-pr-review/` in the repository root. 
 ## Files
 
 - `SKILL.md`: the review loop and its rules, followed by the host agent.
-- `investigator.md`: the prompt each investigator model gets.
+- `investigator.md`: the prompt each investigator model gets in round 1 (full review).
+- `investigator-verify.md`: the prompt for later rounds (verify the previous round's fixes).
 - `investigate.mjs`: runs the models in parallel in the background (`run`, `wait`, `stop`).
 - `test/`: tests with a stubbed `pi`. Run `node --test` in this folder.

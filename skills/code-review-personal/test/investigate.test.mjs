@@ -297,6 +297,44 @@ test('lockfiles do not count toward the size limit', async () => {
   await waitDone(ctx, 1);
 });
 
+test('verify mode reviews only the fix commits, with the fixed-issues list and verdicts', async () => {
+  const ctx = makeRepo();
+  const prHead = git(ctx.repo, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(ctx.repo, 'src/a.js'), 'const a = 2;\nconst b = a + 1;\nconst c = b * 2;\n');
+  git(ctx.repo, 'commit', '-q', '-am', 'round 1 fixes');
+  fs.mkdirSync(path.join(ctx.repo, 'temp-pr-review'));
+  const fixed = path.join(ctx.repo, 'temp-pr-review/fixed-round-1.md');
+  fs.writeFileSync(fixed, 'R1-1 | M | src/a.js:3 | FIXED LIST MARKER');
+  fs.writeFileSync(path.join(ctx.repo, 'temp-pr-review/prior.md'), 'PRIOR MARKER');
+  behave(ctx, 'm/x', 'verdicts');
+
+  const r = cli(ctx, ['run', '--round', '2', '--mode', 'verify', '--since', prHead, '--fixed', fixed, '--models', 'm/x']);
+  assert.equal(r.code, 0, JSON.stringify(r.out));
+  const diff = fs.readFileSync(path.join(roundDir(ctx, 2), 'diff.patch'), 'utf8');
+  assert.ok(diff.includes('const c = b * 2;'), 'fix commit is in the diff');
+  assert.ok(!diff.includes('-const a = 1;'), 'the earlier PR change is not');
+  const prompt = fs.readFileSync(path.join(roundDir(ctx, 2), 'prompt.md'), 'utf8');
+  assert.ok(prompt.includes('You verify fixes'), 'uses the verify template');
+  assert.ok(prompt.includes('FIXED LIST MARKER'));
+  assert.ok(!prompt.includes('PRIOR MARKER'), 'verify rounds do not need the full history');
+
+  const done = await waitDone(ctx, 2);
+  assert.deepEqual(done.results[0].verdicts.map((v) => [v.id, v.fixed]), [['R1-1', true], ['R1-2', false]]);
+  const text = spawnSync(process.execPath, [SCRIPT, 'wait', '--round', '2', '--format', 'text'], { cwd: ctx.repo }).stdout.toString();
+  assert.match(text, /verdict R1-1: fixed/);
+  assert.match(text, /verdict R1-2: NOT FIXED \(still fails\)/);
+});
+
+test('verify mode requires --since and --fixed, and rejects unknown modes', () => {
+  const ctx = makeRepo();
+  assert.equal(cli(ctx, ['run', '--round', '2', '--mode', 'verify', '--fixed', 'x.md']).out.error, 'bad_args');
+  assert.equal(cli(ctx, ['run', '--round', '2', '--mode', 'verify', '--since', ctx.base]).out.error, 'bad_args');
+  assert.equal(cli(ctx, ['run', '--round', '2', '--mode', 'quick', '--base', ctx.base]).out.error, 'bad_args');
+  const missing = cli(ctx, ['run', '--round', '2', '--mode', 'verify', '--since', ctx.base, '--fixed', path.join(ctx.fake, 'nope.md')]);
+  assert.equal(missing.out.error, 'bad_args');
+  assert.equal(fs.existsSync(roundDir(ctx, 2)), false);
+});
+
 test('an empty diff is refused', () => {
   const ctx = makeRepo();
   const r = cli(ctx, ['run', '--round', '1', '--base', 'HEAD']);
@@ -319,18 +357,23 @@ test('stop and run never kill a process that merely reuses a recorded PID', asyn
   // An unrelated, live process group leader stands in for a reused PID.
   const { spawn } = await import('node:child_process');
   const stranger = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
-  fs.writeFileSync(path.join(dir, 'runner.pid'), String(stranger.pid));
-  fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
-  assert.deepEqual(cli(ctx, ['stop']).out, { stopped: 0 });
-  await sleep(200);
-  assert.equal(alive(stranger.pid), true, 'stop must not kill it');
+  try {
+    fs.writeFileSync(path.join(dir, 'runner.pid'), String(stranger.pid));
+    fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
+    assert.deepEqual(cli(ctx, ['stop']).out, { stopped: 0 });
+    await sleep(200);
+    assert.equal(alive(stranger.pid), true, 'stop must not kill it');
 
-  fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
-  const r = cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
-  assert.equal(r.out.status, 'running', 'run must not mistake it for a live runner');
-  await waitDone(ctx, 1);
-  assert.equal(alive(stranger.pid), true, 'run must not kill it');
-  process.kill(-stranger.pid, 'SIGKILL');
+    fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
+    cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+    // run prints "running" either way; only a finished round proves it didn't
+    // mistake the stranger for a live runner and skip starting one.
+    assert.equal((await waitDone(ctx, 1)).status, 'done', 'run must not mistake it for a live runner');
+    assert.equal(calls(ctx).length, 1);
+    assert.equal(alive(stranger.pid), true, 'run must not kill it');
+  } finally {
+    process.kill(-stranger.pid, 'SIGKILL');
+  }
 });
 
 test('unexpected errors still produce a JSON error object', () => {
