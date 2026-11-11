@@ -89,6 +89,7 @@ test('parseOutput ignores ``` quoted inside JSON strings and falls back to an ea
   assert.equal(parseOutput(quoted).findings[0].evidence, 'the last fenced ```json block is cut at the first ```');
   const lastBroken = '```json\n{"findings": [{"t": 1}]}\n```\n```json\n{"findings": [,]}\n```\n';
   assert.equal(parseOutput(lastBroken).findings[0].t, 1);
+  assert.deepEqual(parseOutput('```json\r\n{"findings": []}\r\n```\r\n').findings, []);
 });
 
 test('slug replaces characters that are unsafe in file names', () => {
@@ -300,6 +301,38 @@ test('an empty diff is refused', () => {
   const ctx = makeRepo();
   const r = cli(ctx, ['run', '--round', '1', '--base', 'HEAD']);
   assert.equal(r.out.error, 'empty_diff');
+});
+
+test('a lockfile-only change is refused with its own error', () => {
+  const ctx = makeRepo();
+  const before = git(ctx.repo, 'rev-parse', 'HEAD');
+  fs.writeFileSync(path.join(ctx.repo, 'go.sum'), 'x\n');
+  git(ctx.repo, 'add', '.');
+  git(ctx.repo, 'commit', '-q', '-m', 'deps');
+  assert.equal(cli(ctx, ['run', '--round', '1', '--base', before]).out.error, 'lockfiles_only');
+});
+
+test('stop and run never kill a process that merely reuses a recorded PID', async () => {
+  const ctx = makeRepo();
+  const dir = roundDir(ctx, 1);
+  fs.mkdirSync(dir, { recursive: true });
+  // An unrelated, live process group leader stands in for a reused PID.
+  const { spawn } = await import('node:child_process');
+  const stranger = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });
+  fs.writeFileSync(path.join(dir, 'runner.pid'), String(stranger.pid));
+  fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
+  assert.deepEqual(cli(ctx, ['stop']).out, { stopped: 0 });
+  await sleep(200);
+  assert.equal(alive(stranger.pid), true);
+  process.kill(-stranger.pid, 'SIGKILL');
+});
+
+test('unexpected errors still produce a JSON error object', () => {
+  const ctx = makeRepo();
+  fs.writeFileSync(path.join(ctx.repo, 'temp-pr-review'), 'a file, not a folder');
+  const r = cli(ctx, ['run', '--round', '1', '--base', ctx.base]);
+  assert.equal(r.code, 1);
+  assert.ok(r.out.error, 'stdout must hold a JSON error');
 });
 
 test('refuses and writes nothing when temp-pr-review/ is not ignored', () => {

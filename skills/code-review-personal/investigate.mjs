@@ -97,6 +97,21 @@ function writeAtomic(file, data) {
   fs.renameSync(`${file}.tmp`, file);
 }
 
+// A PID file can outlive its process, and the OS may reuse the PID for something
+// unrelated. Only treat the PID as ours if its command line still contains marker.
+function isOurs(pid, marker) {
+  if (!isAlive(pid)) return false;
+  try {
+    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)]).toString().includes(marker);
+  } catch {
+    return false;
+  }
+}
+
+const RUNNER_MARKER = '_runner';
+// pi gets the prompt as @<repo>/temp-pr-review/round-N/prompt.md.
+const PI_MARKER = `${TEMP_NAME}/round-`;
+
 // Kills pi processes left behind by a runner that died without cleaning up.
 function killOrphans(roundDir) {
   if (!fs.existsSync(roundDir)) return;
@@ -104,7 +119,7 @@ function killOrphans(roundDir) {
     if (!entry.endsWith('.pi.pid')) continue;
     const file = path.join(roundDir, entry);
     const pid = readPid(file);
-    if (isAlive(pid)) {
+    if (isOurs(pid, PI_MARKER)) {
       try {
         process.kill(-pid, 'SIGKILL');
       } catch {}
@@ -123,7 +138,7 @@ function roundNumber(args) {
 // Fences must start a line: findings often quote ``` inside their JSON strings,
 // and JSON strings can't contain raw newlines, so a line-start fence is real.
 export function parseOutput(text) {
-  const blocks = [...text.matchAll(/^```json[^\n]*\n([\s\S]*?)^```[ \t]*$/gm)];
+  const blocks = [...text.matchAll(/^```json[^\n]*\n([\s\S]*?)^```[ \t]*\r?$/gm)];
   const candidates = blocks.length ? blocks.map((b) => b[1]).reverse() : [text.trim()];
   for (const candidate of candidates) {
     let obj;
@@ -141,7 +156,8 @@ export function parseOutput(text) {
 function largestFiles(diff, count) {
   const sizes = [];
   for (const chunk of diff.split(/^(?=diff --git )/m)) {
-    const m = chunk.match(/^diff --git a\/(.+?) b\//);
+    // git quotes paths with special characters: diff --git "a/x y" "b/x y"
+    const m = chunk.match(/^diff --git "?a\/(.+?)"? "?b\//);
     if (m) sizes.push({ file: m[1], bytes: Buffer.byteLength(chunk) });
   }
   return sizes.sort((a, b) => b.bytes - a.bytes).slice(0, count);
@@ -175,7 +191,7 @@ function cmdRun(args) {
   const temp = path.join(root, TEMP_NAME);
   const roundDir = path.join(temp, `round-${n}`);
   const pidFile = path.join(roundDir, 'runner.pid');
-  if (isAlive(readPid(pidFile))) {
+  if (isOurs(readPid(pidFile), RUNNER_MARKER)) {
     print({ status: 'running', round: n });
     return;
   }
@@ -183,12 +199,18 @@ function cmdRun(args) {
   const excludes = LOCKFILES.map((f) => `:(exclude,glob)**/${f}`);
   let diff;
   try {
-    diff = git(root, ['diff', args.base, 'HEAD', '--', ...excludes]).toString();
+    // Fixed prefixes, so diff.noprefix in the user's config can't change the headers.
+    diff = git(root, ['diff', '--src-prefix=a/', '--dst-prefix=b/', args.base, 'HEAD', '--', ...excludes]).toString();
   } catch (e) {
     fail('git_diff_failed', String(e.stderr || e.message).trim());
   }
   const size = Buffer.byteLength(diff);
-  if (size === 0) fail('empty_diff', `No changes between ${args.base} and HEAD (lockfiles not counted).`);
+  if (size === 0) {
+    if (git(root, ['diff', '--name-only', args.base, 'HEAD']).toString().trim()) {
+      fail('lockfiles_only', `Only lockfiles changed between ${args.base} and HEAD, so there is nothing for the models to review.`);
+    }
+    fail('empty_diff', `No changes between ${args.base} and HEAD.`);
+  }
   if (size > MAX_DIFF_BYTES) {
     const top = largestFiles(diff, 3).map((f) => `${f.file} (${kb(f.bytes)})`).join(', ');
     fail('diff_too_large', `PR diff is ${kb(size)}; the limit is ${kb(MAX_DIFF_BYTES)}. Please make the PR smaller. Largest files: ${top}.`);
@@ -392,7 +414,7 @@ async function cmdWait(args) {
       printWait({ status: 'done', round: n, results }, args);
       return;
     }
-    if (!isAlive(readPid(path.join(roundDir, 'runner.pid')))) {
+    if (!isOurs(readPid(path.join(roundDir, 'runner.pid')), RUNNER_MARKER)) {
       printWait({ status: 'died', round: n }, args);
       return;
     }
@@ -414,7 +436,7 @@ function cmdStop() {
     for (const entry of fs.readdirSync(temp)) {
       if (!/^round-\d+$/.test(entry)) continue;
       const pid = readPid(path.join(temp, entry, 'runner.pid'));
-      if (isAlive(pid)) {
+      if (isOurs(pid, RUNNER_MARKER)) {
         try {
           process.kill(pid, 'SIGTERM');
           stopped++;
@@ -433,9 +455,18 @@ const isMain = process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpa
 if (isMain) {
   const [cmd, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
-  if (cmd === 'run') cmdRun(args);
-  else if (cmd === '_runner') await cmdRunner(args);
-  else if (cmd === 'wait') await cmdWait(args);
-  else if (cmd === 'stop') cmdStop();
-  else fail('bad_args', 'Usage: investigate.mjs run|wait|stop [options]');
+  if (cmd === '_runner') {
+    // Not wrapped: the runner's own crash handler must kill pi before exiting.
+    await cmdRunner(args);
+  } else {
+    // Keep the one-JSON-object contract for unexpected errors too.
+    try {
+      if (cmd === 'run') cmdRun(args);
+      else if (cmd === 'wait') await cmdWait(args);
+      else if (cmd === 'stop') cmdStop();
+      else fail('bad_args', 'Usage: investigate.mjs run|wait|stop [options]');
+    } catch (e) {
+      fail('internal_error', String(e?.message || e));
+    }
+  }
 }
