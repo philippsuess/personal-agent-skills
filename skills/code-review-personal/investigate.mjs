@@ -19,8 +19,10 @@ const DEFAULT_MODELS = [
 const MAX_DIFF_BYTES = 200 * 1024;
 const PI_BIN = process.env.CODE_REVIEW_PERSONAL_PI_BIN || 'pi';
 const TIMEOUT_SEC = Number(process.env.CODE_REVIEW_PERSONAL_TIMEOUT_SEC);
-// An invalid value would make setTimeout fire at once and kill every model.
-const TIMEOUT_MS = (Number.isFinite(TIMEOUT_SEC) && TIMEOUT_SEC > 0 ? TIMEOUT_SEC : 600) * 1000;
+// An invalid value would make setTimeout fire at once and kill every model. That
+// includes anything above setTimeout's limit of 2^31-1 ms (about 24.8 days).
+const TIMEOUT_MS =
+  (Number.isFinite(TIMEOUT_SEC) && TIMEOUT_SEC > 0 && TIMEOUT_SEC * 1000 <= 2 ** 31 - 1 ? TIMEOUT_SEC : 600) * 1000;
 const LOCKFILES = [
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'Cargo.lock', 'Gemfile.lock',
   'Podfile.lock', 'poetry.lock', 'uv.lock', 'composer.lock', 'go.sum', 'Package.resolved',
@@ -102,7 +104,8 @@ function writeAtomic(file, data) {
 function isOurs(pid, marker) {
   if (!isAlive(pid)) return false;
   try {
-    return execFileSync('ps', ['-o', 'command=', '-p', String(pid)]).toString().includes(marker);
+    // -ww: never truncate, or a marker late in a long command line would be cut off.
+    return execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)]).toString().includes(marker);
   } catch {
     return false;
   }
@@ -321,7 +324,7 @@ async function cmdRunner(args) {
         } catch {}
       }, TIMEOUT_MS);
       // 'exit' can follow 'error'; closing the fds twice would crash the runner.
-      const finish = (code, spawnError) => {
+      const finish = (code, spawnError, signal) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -334,10 +337,11 @@ async function cmdRunner(args) {
         if (parsed) resolve({ ok: true, parsed });
         else if (spawnError) resolve({ ok: false, reason: `spawn failed: ${spawnError.message}` });
         else if (timedOut) resolve({ ok: false, reason: 'timeout' });
+        else if (signal) resolve({ ok: false, reason: `killed by ${signal}` });
         else resolve({ ok: false, reason: code === 0 ? 'invalid JSON' : `exit code ${code}`, invalidJson: code === 0 });
       };
       child.on('error', (e) => finish(null, e));
-      child.on('exit', (code) => finish(code));
+      child.on('exit', (code, signal) => finish(code, null, signal));
     });
 
   await Promise.all(

@@ -28,7 +28,7 @@ If the PR number is missing, ask for it.
 ## Setup
 
 1. **Tracked changes:** `git status --porcelain --untracked-files=no` must be empty. Otherwise stop and tell the user. Untracked files are fine.
-2. **Another review running?** If any `temp-pr-review/round-*/runner.pid` names a live process (`kill -0 <pid>`), stop and tell the user. Do this **before** switching branches.
+2. **Another review running?** If any `temp-pr-review/round-*/runner.pid` names a live runner (`ps -ww -o command= -p <pid>` prints a line containing `_runner`; a bare `kill -0` would also match an unrelated process that reused the PID), stop and tell the user. Do this **before** switching branches.
 3. **Check out the PR:** remember the current branch (`git branch --show-current`). Run `gh pr checkout <n>`. If it fails (e.g. the local branch has diverged), stop and show the error. Then `gh pr view <n> --json title,body,baseRefName,headRefName,author,state,url`. If `state` isn't `OPEN`, warn and ask whether to continue.
 4. **Merge-base:** find the remote whose URL points to the PR's base repository (the `owner/repo` in the PR URL; usually `origin`, `upstream` in fork setups). `git fetch <remote> <baseRefName>`, then `MB=$(git merge-base <remote>/<baseRefName> HEAD)`. MB stays fixed for the whole run.
 5. **Temp dir** `temp-pr-review/` in the repository root:

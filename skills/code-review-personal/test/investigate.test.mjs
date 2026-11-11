@@ -323,16 +323,24 @@ test('stop and run never kill a process that merely reuses a recorded PID', asyn
   fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
   assert.deepEqual(cli(ctx, ['stop']).out, { stopped: 0 });
   await sleep(200);
-  assert.equal(alive(stranger.pid), true);
+  assert.equal(alive(stranger.pid), true, 'stop must not kill it');
+
+  fs.writeFileSync(path.join(dir, 'm_x.pi.pid'), String(stranger.pid));
+  const r = cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+  assert.equal(r.out.status, 'running', 'run must not mistake it for a live runner');
+  await waitDone(ctx, 1);
+  assert.equal(alive(stranger.pid), true, 'run must not kill it');
   process.kill(-stranger.pid, 'SIGKILL');
 });
 
 test('unexpected errors still produce a JSON error object', () => {
   const ctx = makeRepo();
-  fs.writeFileSync(path.join(ctx.repo, 'temp-pr-review'), 'a file, not a folder');
+  // Passes the temp-dir checks, then mkdir of round-1 fails because it's a file.
+  fs.mkdirSync(path.join(ctx.repo, 'temp-pr-review'));
+  fs.writeFileSync(path.join(ctx.repo, 'temp-pr-review/round-1'), 'a file, not a folder');
   const r = cli(ctx, ['run', '--round', '1', '--base', ctx.base]);
   assert.equal(r.code, 1);
-  assert.ok(r.out.error, 'stdout must hold a JSON error');
+  assert.equal(r.out.error, 'internal_error');
 });
 
 test('refuses and writes nothing when temp-pr-review/ is not ignored', () => {
