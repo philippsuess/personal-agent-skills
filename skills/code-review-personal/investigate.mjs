@@ -89,6 +89,28 @@ function readPid(file) {
   }
 }
 
+// Write to a temp file and rename, so readers never see a half-written file.
+function writeAtomic(file, data) {
+  fs.writeFileSync(`${file}.tmp`, data);
+  fs.renameSync(`${file}.tmp`, file);
+}
+
+// Kills pi processes left behind by a runner that died without cleaning up.
+function killOrphans(roundDir) {
+  if (!fs.existsSync(roundDir)) return;
+  for (const entry of fs.readdirSync(roundDir)) {
+    if (!entry.endsWith('.pi.pid')) continue;
+    const file = path.join(roundDir, entry);
+    const pid = readPid(file);
+    if (isAlive(pid)) {
+      try {
+        process.kill(-pid, 'SIGKILL');
+      } catch {}
+    }
+    fs.rmSync(file, { force: true });
+  }
+}
+
 function roundNumber(args) {
   const n = Number(args.round);
   if (!Number.isInteger(n) || n < 1) fail('bad_args', '--round must be a positive integer');
@@ -163,10 +185,17 @@ function cmdRun(args) {
     fail('diff_too_large', `PR diff is ${kb(size)}; the limit is ${kb(MAX_DIFF_BYTES)}. Please make the PR smaller. Largest files: ${top}.`);
   }
 
+  // Build the prompt first, so a bad --brief fails before anything is written.
+  const prompt = buildPrompt(temp, n, args.brief);
   fs.mkdirSync(roundDir, { recursive: true });
+  killOrphans(roundDir);
+  // A new runner retries failed models, so drop old failures and the done marker.
+  for (const entry of fs.readdirSync(roundDir)) {
+    if (entry.endsWith('.failed') || entry === 'done') fs.rmSync(path.join(roundDir, entry), { force: true });
+  }
   fs.writeFileSync(path.join(roundDir, 'diff.patch'), diff);
   fs.writeFileSync(path.join(roundDir, 'models.json'), JSON.stringify(models.map((model) => ({ model, slug: slug(model) }))));
-  fs.writeFileSync(path.join(roundDir, 'prompt.md'), buildPrompt(temp, n, args.brief));
+  fs.writeFileSync(path.join(roundDir, 'prompt.md'), prompt);
 
   const log = fs.openSync(path.join(roundDir, 'runner.log'), 'a');
   const child = spawn(process.execPath, [SCRIPT, '_runner', '--round', String(n)], {
@@ -241,16 +270,24 @@ async function cmdRunner(args) {
         stdio: ['ignore', outFd, errFd],
       });
       children.add(child);
+      // Recorded so run/stop can kill it if this runner dies without cleaning up.
+      const piPidFile = path.join(roundDir, `${slug(model)}.pi.pid`);
+      if (child.pid) fs.writeFileSync(piPidFile, String(child.pid));
       let timedOut = false;
+      let settled = false;
       const timer = setTimeout(() => {
         timedOut = true;
         try {
           process.kill(-child.pid, 'SIGKILL');
         } catch {}
       }, TIMEOUT_MS);
+      // 'exit' can follow 'error'; closing the fds twice would crash the runner.
       const finish = (code, spawnError) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         children.delete(child);
+        fs.rmSync(piPidFile, { force: true });
         fs.closeSync(outFd);
         fs.closeSync(errFd);
         const parsed = spawnError ? null : parseOutput(fs.readFileSync(out, 'utf8'));
@@ -268,14 +305,14 @@ async function cmdRunner(args) {
     models.map(async ({ model, slug: s }) => {
       const ok = path.join(roundDir, `${s}.json`);
       const failed = path.join(roundDir, `${s}.failed`);
-      if (fs.existsSync(ok) || fs.existsSync(failed)) return;
+      if (fs.existsSync(ok)) return;
       const first = await runPi(model, 1, false);
       // Retry once, always with the same model.
       const result = first.ok ? first : await runPi(model, 2, first.invalidJson);
       if (result.ok) {
-        fs.writeFileSync(ok, JSON.stringify({ model, findings: result.parsed.findings, attempts: first.ok ? 1 : 2 }));
+        writeAtomic(ok, JSON.stringify({ model, findings: result.parsed.findings, attempts: first.ok ? 1 : 2 }));
       } else {
-        fs.writeFileSync(failed, JSON.stringify({ model, reason: `${first.reason}, then ${result.reason}` }));
+        writeAtomic(failed, JSON.stringify({ model, reason: `${first.reason}, then ${result.reason}` }));
       }
     }),
   );
@@ -310,7 +347,9 @@ function roundStatus(roundDir) {
 async function cmdWait(args) {
   const root = repoRoot();
   const n = roundNumber(args);
-  const timeoutMs = Number(args.timeout ?? 90) * 1000;
+  const timeoutSec = Number(args.timeout ?? 90);
+  if (!Number.isFinite(timeoutSec) || timeoutSec < 0) fail('bad_args', '--timeout must be a non-negative number of seconds');
+  const timeoutMs = timeoutSec * 1000;
   const roundDir = path.join(root, TEMP_NAME, `round-${n}`);
   if (!fs.existsSync(path.join(roundDir, 'models.json'))) fail('no_round', `Round ${n} was never started.`);
   const deadline = Date.now() + timeoutMs;
@@ -348,6 +387,8 @@ function cmdStop() {
           stopped++;
         } catch {}
       }
+      // Also catches pi processes whose runner already died.
+      killOrphans(path.join(temp, entry));
     }
   }
   print({ stopped });

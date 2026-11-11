@@ -186,16 +186,69 @@ test('a killed runner is reported as died; a second run skips finished models', 
   cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/a,m/b']);
   for (let i = 0; i < 40 && !fs.existsSync(path.join(roundDir(ctx, 1), 'm_a.json')); i++) await sleep(100);
   const runner = Number(fs.readFileSync(path.join(roundDir(ctx, 1), 'runner.pid'), 'utf8'));
+  const orphan = Number(fs.readFileSync(path.join(ctx.fake, 'm_b.pid'), 'utf8'));
   process.kill(runner, 'SIGKILL');
-  process.kill(-Number(fs.readFileSync(path.join(ctx.fake, 'm_b.pid'), 'utf8')), 'SIGKILL');
   await sleep(200);
   assert.equal(cli(ctx, ['wait', '--round', '1', '--timeout', '0']).out.status, 'died');
+  assert.equal(alive(orphan), true, 'pi outlives a SIGKILLed runner');
 
   behave(ctx, 'm/b', 'ok');
   cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/a,m/b']);
+  await sleep(300);
+  assert.equal(alive(orphan), false, 'a new run kills the orphaned pi first');
   const done = await waitDone(ctx, 1);
   assert.ok(done.results.every((x) => x.ok));
   assert.equal(calls(ctx).filter((c) => c.model === 'm/a').length, 1, 'finished model must not run again');
+});
+
+test('stop kills pi processes whose runner already died', async () => {
+  const ctx = makeRepo();
+  behave(ctx, 'm/x', 'hang');
+  cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+  const piPidFile = path.join(ctx.fake, 'm_x.pid');
+  for (let i = 0; i < 40 && !fs.existsSync(piPidFile); i++) await sleep(100);
+  await sleep(200);
+  process.kill(Number(fs.readFileSync(path.join(roundDir(ctx, 1), 'runner.pid'), 'utf8')), 'SIGKILL');
+  const orphan = Number(fs.readFileSync(piPidFile, 'utf8'));
+  assert.deepEqual(cli(ctx, ['stop']).out, { stopped: 0 });
+  await sleep(300);
+  assert.equal(alive(orphan), false);
+});
+
+test('a missing pi binary fails the model cleanly instead of crashing the runner', async () => {
+  const ctx = makeRepo();
+  const env = { CODE_REVIEW_PERSONAL_PI_BIN: path.join(ctx.fake, 'no-such-pi') };
+  cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x'], env);
+  const done = await waitDone(ctx, 1, env);
+  assert.equal(done.status, 'done');
+  assert.equal(done.results[0].ok, false);
+  assert.match(done.results[0].reason, /spawn failed/);
+});
+
+test('retrying a round whose models all failed calls the models again', async () => {
+  const ctx = makeRepo();
+  behave(ctx, 'm/x', 'crash');
+  cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+  assert.equal((await waitDone(ctx, 1)).results[0].ok, false);
+  behave(ctx, 'm/x', 'ok');
+  cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/x']);
+  const done = await waitDone(ctx, 1);
+  assert.equal(done.results[0].ok, true);
+  assert.equal(calls(ctx).length, 3);
+});
+
+test('wait rejects a non-numeric timeout', () => {
+  const ctx = makeRepo();
+  fs.mkdirSync(roundDir(ctx, 1), { recursive: true });
+  fs.writeFileSync(path.join(roundDir(ctx, 1), 'models.json'), '[]');
+  assert.equal(cli(ctx, ['wait', '--round', '1', '--timeout', 'abc']).out.error, 'bad_args');
+});
+
+test('an unreadable --brief fails before anything is written', () => {
+  const ctx = makeRepo();
+  const r = cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--brief', path.join(ctx.fake, 'missing.md')]);
+  assert.equal(r.out.error, 'bad_args');
+  assert.equal(fs.existsSync(roundDir(ctx, 1)), false);
 });
 
 test('run while a runner is alive does not start a second one', async () => {

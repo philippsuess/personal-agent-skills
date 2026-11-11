@@ -14,6 +14,7 @@ Several models (via the `pi` CLI) review the same PR diff in parallel. The agent
 - **H** findings are always asked about. **L** findings are never asked about.
 - Fixes are verified with the build, test and lint commands from the repo's `AGENTS.md`, compared against a baseline taken before any change.
 - Diffs over 200 KB (lockfiles not counted) are refused.
+- The investigators only get read-only tools (`read`, `grep`, `find`, `ls`), but pi doesn't sandbox `read`: a model can read files outside the repository. The prompt tells them not to; nothing enforces it.
 
 ## Requirements
 
