@@ -30,6 +30,7 @@ Each skill uses the native `SKILL.md` format, so once synced it is available as
 - **stacked-pr-merge-main**: Safely merge main into feature branch created from another merged branch, preferring current branch on conflicts
 - **multi-clone**: Clone a GitHub repository multiple times into numbered folders for parallel agent work
 - **flaky-ci-watcher**: Watch your approved open PRs, auto re-run flaky CI failures, and alert in the terminal when a failure looks real or stays flaky
+- **code-review-personal**: Review a PR's diff with several models in parallel (via `pi`), triage findings by LOGAF level, fix what's safe, ask about the rest, and loop for up to 5 rounds
 
 ## Setup
 

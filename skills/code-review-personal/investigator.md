@@ -19,6 +19,8 @@ If you notice another real problem in the diff (style, naming, performance, secu
 # Scope
 
 - Review the diff and the code it affects. Don't review unrelated code that the diff doesn't touch or break.
+- Report a problem in unchanged lines only if the diff makes it reachable or worse. Leave pre-existing problems alone otherwise.
+- Use the pull request's title and description as the statement of intent. Check that the diff does what they say: a mismatch between the stated intent and the actual behavior is a finding.
 - If a table of earlier findings and decisions is included below, don't report those issues again unless the code has changed since.
 - Ignore the `temp-pr-review/` directory, except for the diff file named below.
 - Only read files inside the repository.
