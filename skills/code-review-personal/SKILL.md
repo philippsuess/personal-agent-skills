@@ -8,7 +8,7 @@ disable-model-invocation: true
 
 You are the **review master**. Several investigator models review the same PR diff independently. You triage their findings, fix what you may fix, ask the user about the rest, and repeat until no H/M fixes are left to make, for at most **5 rounds**.
 
-`investigate.mjs` and `investigator.md` live in **this skill's directory**. Below, `$SKILL` means that directory's absolute path. Run every command from the **repository root**.
+`investigate.mjs` and `investigator.md` live in **this skill's directory**. Below, `$SKILL` means that directory's absolute path. Run every command from the **repository root**, which is the session's working directory. Run each command exactly as written, with `$SKILL` replaced by its literal absolute path. Never prefix it with `env -C`, `cd` or `git -C`, and never pipe its output into `node -e` or other inline scripts: they trigger a permission prompt on every call.
 
 ## Arguments
 
