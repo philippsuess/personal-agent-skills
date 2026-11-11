@@ -5,7 +5,9 @@
 
 set -euo pipefail
 
-SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# -P: the physical path, so running this through the ~/.agents/skills symlink still
+# matches the link target recorded by the first install.
+SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SKILL_NAME="$(basename "$SKILL_DIR")"
 TARGET_DIR="$HOME/.agents/skills"
 TARGET="$TARGET_DIR/$SKILL_NAME"

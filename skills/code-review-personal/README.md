@@ -2,7 +2,7 @@
 
 Multi-model review loop for a pull request, focused on correctness bugs.
 
-Several models (via the `pi` CLI) review the same PR diff in parallel. The agent you invoke the skill from (pi, Claude Code, Codex) acts as the review master: it merges duplicate findings, triages them by LOGAF level (L = nitpick, M = worth doing, H = must fix), fixes what is safe, asks you about the rest, and commits one fix commit per round. It repeats for up to 5 rounds, then shows a summary, deletes its temp files and pushes. It only asks first if the PR isn't yours.
+Several models (via the `pi` CLI) review the same PR diff in parallel. The agent you invoke the skill from (pi, Claude Code, Codex) acts as the review master: it merges duplicate findings, triages them by LOGAF level (L = nitpick, M = worth doing, H = must fix), fixes what is safe, asks you about the rest, and commits one fix commit per round. It repeats for up to 5 rounds, then shows a summary, deletes its temp files and pushes. H findings are always brought to you, whoever's PR it is. The push itself happens without asking for your own PRs; for someone else's PR it asks first.
 
 Round 1 reviews the whole PR diff. Later rounds are verify rounds: the models only check the previous round's fix commit, confirming each fixed issue is really fixed and that the fixes didn't add new problems. That keeps later rounds fast, at the cost of not re-finding issues round 1 missed.
 
