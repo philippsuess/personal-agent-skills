@@ -84,6 +84,13 @@ test('parseOutput takes the last json block, accepts unfenced JSON, rejects bad 
   assert.equal(parseOutput('```json\n{"other": 1}\n```'), null);
 });
 
+test('parseOutput ignores ``` quoted inside JSON strings and falls back to an earlier valid block', () => {
+  const quoted = 'Notes.\n```json\n{"findings": [{"evidence": "the last fenced ```json block is cut at the first ```"}]}\n```\n';
+  assert.equal(parseOutput(quoted).findings[0].evidence, 'the last fenced ```json block is cut at the first ```');
+  const lastBroken = '```json\n{"findings": [{"t": 1}]}\n```\n```json\n{"findings": [,]}\n```\n';
+  assert.equal(parseOutput(lastBroken).findings[0].t, 1);
+});
+
 test('slug replaces characters that are unsafe in file names', () => {
   assert.equal(slug('openrouter/z-ai/glm-5.3-flash'), 'openrouter_z-ai_glm-5.3-flash');
 });
@@ -171,7 +178,8 @@ test('wait reports running with finished/pending, then done', async () => {
   behave(ctx, 'm/slow', 'slow_ok');
   behave(ctx, 'm/fast', 'ok');
   cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'm/slow,m/fast']);
-  await sleep(1500);
+  // Poll instead of a fixed sleep, so a slow machine doesn't make this flaky.
+  for (let i = 0; i < 50 && !fs.existsSync(path.join(roundDir(ctx, 1), 'm_fast.json')); i++) await sleep(100);
   const mid = cli(ctx, ['wait', '--round', '1', '--timeout', '0']).out;
   assert.equal(mid.status, 'running');
   assert.deepEqual(mid.finished, ['m/fast']);
@@ -316,6 +324,7 @@ test('rejects bad --models values', () => {
   assert.equal(cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'a,b,c,d,e,f']).out.error, 'bad_args');
   assert.equal(cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'a,a']).out.error, 'bad_args');
   assert.equal(cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'x/a,x_a']).out.error, 'bad_args');
+  assert.equal(cli(ctx, ['run', '--round', '1', '--base', ctx.base, '--models', 'x/Bar,x/bar']).out.error, 'bad_args');
 });
 
 test('stop kills the runner and its pi processes', async () => {

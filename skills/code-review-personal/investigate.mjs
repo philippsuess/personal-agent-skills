@@ -18,7 +18,9 @@ const DEFAULT_MODELS = [
 ];
 const MAX_DIFF_BYTES = 200 * 1024;
 const PI_BIN = process.env.CODE_REVIEW_PERSONAL_PI_BIN || 'pi';
-const TIMEOUT_MS = Number(process.env.CODE_REVIEW_PERSONAL_TIMEOUT_SEC || 600) * 1000;
+const TIMEOUT_SEC = Number(process.env.CODE_REVIEW_PERSONAL_TIMEOUT_SEC);
+// An invalid value would make setTimeout fire at once and kill every model.
+const TIMEOUT_MS = (Number.isFinite(TIMEOUT_SEC) && TIMEOUT_SEC > 0 ? TIMEOUT_SEC : 600) * 1000;
 const LOCKFILES = [
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lock', 'Cargo.lock', 'Gemfile.lock',
   'Podfile.lock', 'poetry.lock', 'uv.lock', 'composer.lock', 'go.sum', 'Package.resolved',
@@ -117,18 +119,22 @@ function roundNumber(args) {
   return n;
 }
 
-// Takes the last fenced ```json block, or the whole output if there is none.
+// Takes the last fenced ```json block that parses, or the whole output if there is none.
+// Fences must start a line: findings often quote ``` inside their JSON strings,
+// and JSON strings can't contain raw newlines, so a line-start fence is real.
 export function parseOutput(text) {
-  const blocks = [...text.matchAll(/```json[^\n]*\n([\s\S]*?)```/g)];
-  const candidate = blocks.length ? blocks[blocks.length - 1][1] : text.trim();
-  let obj;
-  try {
-    obj = JSON.parse(candidate);
-  } catch {
-    return null;
+  const blocks = [...text.matchAll(/^```json[^\n]*\n([\s\S]*?)^```[ \t]*$/gm)];
+  const candidates = blocks.length ? blocks.map((b) => b[1]).reverse() : [text.trim()];
+  for (const candidate of candidates) {
+    let obj;
+    try {
+      obj = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    if (obj && Array.isArray(obj.findings)) return obj;
   }
-  if (!obj || !Array.isArray(obj.findings)) return null;
-  return obj;
+  return null;
 }
 
 // Splits a unified diff into per-file sizes, largest first.
@@ -152,7 +158,10 @@ function cmdRun(args) {
   const models = args.models ? args.models.split(',').map((m) => m.trim()).filter(Boolean) : DEFAULT_MODELS;
   if (models.length < 1 || models.length > 5) fail('bad_args', '--models needs 1 to 5 entries');
   if (new Set(models).size !== models.length) fail('bad_args', '--models has duplicates');
-  if (new Set(models.map(slug)).size !== models.length) fail('bad_args', '--models has entries that map to the same file name');
+  // Lowercase, because macOS file systems are case-insensitive by default.
+  if (new Set(models.map((m) => slug(m).toLowerCase())).size !== models.length) {
+    fail('bad_args', '--models has entries that map to the same file name');
+  }
 
   if (git(root, ['ls-files', TEMP_NAME]).toString().trim()) {
     fail('temp_dir_tracked', `The repo tracks files under ${TEMP_NAME}/, so it can't be used as the temp dir.`);
@@ -194,7 +203,7 @@ function cmdRun(args) {
     if (entry.endsWith('.failed') || entry === 'done') fs.rmSync(path.join(roundDir, entry), { force: true });
   }
   fs.writeFileSync(path.join(roundDir, 'diff.patch'), diff);
-  fs.writeFileSync(path.join(roundDir, 'models.json'), JSON.stringify(models.map((model) => ({ model, slug: slug(model) }))));
+  writeAtomic(path.join(roundDir, 'models.json'), JSON.stringify(models.map((model) => ({ model, slug: slug(model) }))));
   fs.writeFileSync(path.join(roundDir, 'prompt.md'), prompt);
 
   const log = fs.openSync(path.join(roundDir, 'runner.log'), 'a');
@@ -250,6 +259,14 @@ async function cmdRunner(args) {
     killAll();
     process.exit(143);
   });
+  // Never die with pi processes still running (e.g. temp-pr-review/ deleted mid-write).
+  const crash = (e) => {
+    killAll();
+    process.stderr.write(`runner crashed: ${e?.stack || e}\n`);
+    process.exit(1);
+  };
+  process.on('uncaughtException', crash);
+  process.on('unhandledRejection', crash);
   // Exit when the temp dir is deleted, so an aborted review stops calling models.
   const watch = setInterval(() => {
     if (!fs.existsSync(temp)) {

@@ -34,7 +34,7 @@ If the PR number is missing, ask for it.
 5. **Temp dir** `temp-pr-review/` in the repository root:
    - If `git ls-files temp-pr-review` prints anything, stop: the repo tracks that path.
    - Exclude file: `git rev-parse --git-path info/exclude` (relative to the repo root). If it has no `temp-pr-review/` line, append one. Leave it there permanently.
-   - If `temp-pr-review/` exists (left over from a crashed run), delete it. Then create it.
+   - If `temp-pr-review/` exists (left over from a crashed run), first run `node $SKILL/investigate.mjs stop` (it kills model processes a dead runner left behind; deleting the folder first loses their process IDs), then delete it. Then create it.
    - `git check-ignore -q temp-pr-review/` must succeed; otherwise stop.
    - Write the PR title and body to `temp-pr-review/pr.md`.
 6. **Verification commands:** read `AGENTS.md` in the repo root, plus nested `AGENTS.md` files in directories the PR touches. Extract build, test and lint commands.
